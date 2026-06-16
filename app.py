@@ -11,14 +11,23 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CARGA DE DATOS (4 ARCHIVOS CON ENFOQUE HISTÓRICO)
+# CARGA DE DATOS (CON FILTRO DE NIVEL INCORPORADO)
 # ==========================================================
 @st.cache_data
 def cargar_datos():
     df_depto = pd.read_csv("predicciones_departamentos_2026.csv")
-    df_muni = pd.read_csv("predicciones_festivos_2026.csv")
+    df_muni_raw = pd.read_csv("predicciones_festivos_2026.csv") # Cargamos el archivo base de municipios
     df_importancia = pd.read_csv("importancia_caracteristicas.csv")
     df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv")
+
+    # 🛑 SOLUCIÓN CRÍTICA: Filtrar para que NO se incluyan las filas agregadas de departamento
+    # Evaluamos si existe la columna 'nivel' y filtramos solo lo que sea estrictamente 'municipio'
+    if "nivel" in df_muni_raw.columns:
+        df_muni = df_muni_raw[df_muni_raw["nivel"] == "municipio"].copy()
+    else:
+        # En caso de que la columna se llame diferente o no esté, hacemos un filtro de seguridad:
+        # Si el nombre del municipio es idéntico al del departamento, lo descartamos.
+        df_muni = df_muni_raw[df_muni_raw["municipio"] != df_muni_raw["departamento"]].copy()
 
     df_depto["fecha"] = pd.to_datetime(df_depto["fecha"])
     df_muni["fecha"] = pd.to_datetime(df_muni["fecha"])
@@ -52,7 +61,7 @@ df_depto_filtrado = df_depto[df_depto["departamento"] == depto_seleccionado]
 df_muni_filtrado = df_muni[df_muni["departamento"] == depto_seleccionado]
 
 # ==========================================================
-# PESTAÑAS (ORDEN LÓGICO CORREGIDO)
+# PESTAÑAS (ORDEN LÓGICO)
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏢 Vista Departamental",
@@ -98,19 +107,32 @@ with tab1:
     st.plotly_chart(fig_lluvia, use_container_width=True)
 
 # ==========================================================
-# TAB 2: VISTA MUNICIPAL
+# TAB 2: VISTA MUNICIPAL (SÓLO MUNICIPIOS REALES EN TOP 10)
 # ==========================================================
 with tab2:
     st.header(f"Municipios del departamento {depto_seleccionado}")
     
-    st.subheader("Municipios con mayor consumo")
-    top_munis = df_muni_filtrado.groupby("municipio")["demanda_municipio_est_gwh"].sum().reset_index().sort_values(by="demanda_municipio_est_gwh", ascending=False)
-    fig_bar = px.bar(top_munis, x="demanda_municipio_est_gwh", y="municipio", orientation="h")
+    st.subheader("Municipios con mayor consumo (Top 10)")
+    top_munis = df_muni_filtrado.groupby("municipio")["demanda_municipio_est_gwh"].sum().reset_index().sort_values(by="demanda_municipio_est_gwh", ascending=False).head(10)
+    
+    fig_bar = px.bar(
+        top_munis, x="demanda_municipio_est_gwh", y="municipio", orientation="h",
+        title="Top 10 Municipios con Mayor Demanda Energética Real en Festivos",
+        labels={'demanda_municipio_est_gwh': 'Consumo Acumulado (GWh)', 'municipio': 'Municipio'}
+    )
+    fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig_bar, use_container_width=True)
 
     st.subheader("Municipios con mayor error promedio")
-    top_error = df_muni_filtrado.groupby("municipio")["error_absolute" if "error_absolute" in df_muni_filtrado.columns else "error_absoluto"].mean().reset_index().sort_values(by=df_muni_filtrado.columns[-1], ascending=False).head(10)
-    fig_error = px.bar(top_error, x=top_error.columns[1], y="municipio", orientation="h")
+    col_error = "error_absolute" if "error_absolute" in df_muni_filtrado.columns else "error_absoluto"
+    top_error = df_muni_filtrado.groupby("municipio")[col_error].mean().reset_index().sort_values(by=col_error, ascending=False).head(10)
+    
+    fig_error = px.bar(
+        top_error, x=col_error, y="municipio", orientation="h",
+        title="Top 10 Municipios con Mayor Desviación del Modelo",
+        labels={col_error: 'Error Absoluto Promedio (GWh)', 'municipio': 'Municipio'}
+    )
+    fig_error.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig_error, use_container_width=True)
 
 # ==========================================================
@@ -146,7 +168,7 @@ with tab3:
     st.plotly_chart(fig_real_pred, use_container_width=True)
 
 # ==========================================================
-# TAB 4: 🔥 SECTORES ECONÓMICOS (HISTÓRICO COMPLETO 2022-2026)
+# TAB 4: 🔥 SECTORES ECONÓMICOS
 # ==========================================================
 with tab4:
     st.header("🔥 Estructura del Consumo Eléctrico Nacional (2022-2026)")
@@ -204,7 +226,7 @@ with tab4:
         st.dataframe(tabla_dominante_hist, use_container_width=True, hide_index=True)
 
 # ==========================================================
-# TAB 5: 📌 CONCLUSIONES (AL FINAL COMO CIERRE)
+# TAB 5: 📌 CONCLUSIONES
 # ==========================================================
 with tab5:
     st.header("Conclusiones")
