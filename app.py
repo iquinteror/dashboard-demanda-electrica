@@ -11,24 +11,37 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CARGA DE DATOS (CON FILTRO DE NIVEL INCORPORADO)
+# CARGA DE DATOS (CON LIMPIEZA Y HOMOLOGACIÓN DE BOGOTÁ)
 # ==========================================================
 @st.cache_data
 def cargar_datos():
     df_depto = pd.read_csv("predicciones_departamentos_2026.csv")
-    df_muni_raw = pd.read_csv("predicciones_festivos_2026.csv") # Cargamos el archivo base de municipios
+    df_muni_raw = pd.read_csv("predicciones_festivos_2026.csv")
     df_importancia = pd.read_csv("importancia_caracteristicas.csv")
     df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv")
 
-    # 🛑 SOLUCIÓN CRÍTICA: Filtrar para que NO se incluyan las filas agregadas de departamento
-    # Evaluamos si existe la columna 'nivel' y filtramos solo lo que sea estrictamente 'municipio'
+    # Asegurar que las columnas clave no tengan espacios en blanco alrededor
     if "nivel" in df_muni_raw.columns:
+        df_muni_raw["nivel"] = df_muni_raw["nivel"].str.strip()
+    df_muni_raw["departamento"] = df_muni_raw["departamento"].str.strip()
+    df_muni_raw["municipio"] = df_muni_raw["municipio"].str.strip()
+
+    # 🛑 FILTRO INTELIGENTE: Excluir filas agregadas de departamentos, pero rescatar Bogotá municipio
+    if "nivel" in df_muni_raw.columns:
+        # Mantenemos las filas que sean estrictamente 'municipio'
         df_muni = df_muni_raw[df_muni_raw["nivel"] == "municipio"].copy()
     else:
-        # En caso de que la columna se llame diferente o no esté, hacemos un filtro de seguridad:
-        # Si el nombre del municipio es idéntico al del departamento, lo descartamos.
+        # Filtro de seguridad alternativo por si no detecta la columna nivel
         df_muni = df_muni_raw[df_muni_raw["municipio"] != df_muni_raw["departamento"]].copy()
+        # Rescate explícito para Bogotá si se usó el filtro alternativo
+        filas_bogota = df_muni_raw[df_muni_raw["departamento"] == "Bogotá"].copy()
+        df_muni = pd.concat([df_muni, filas_bogota]).drop_duplicates()
 
+    # 🎯 HOMOLOGACIÓN CRÍTICA: Convertir "Bogotá (municipio)" en "Bogotá" para que los filtros unifiquen los datos
+    df_muni["municipio"] = df_muni["municipio"].replace({"Bogotá (municipio)": "Bogotá"})
+    df_muni["departamento"] = df_muni["departamento"].replace({"Bogotá (municipio)": "Bogotá"})
+
+    # Convertir fechas
     df_depto["fecha"] = pd.to_datetime(df_depto["fecha"])
     df_muni["fecha"] = pd.to_datetime(df_muni["fecha"])
     df_sector_hist["fecha"] = pd.to_datetime(df_sector_hist["fecha"])
@@ -38,7 +51,7 @@ def cargar_datos():
 try:
     df_depto, df_muni, df_importancia, df_sector_hist = cargar_datos()
 except:
-    st.error("No se encontraron los archivos CSV requeridos en el repositorio.")
+    st.error("No se encontraron los archivos CSV requeridos en el repositorio o tienen un formato incompatible.")
     st.stop()
 
 # ==========================================================
@@ -76,6 +89,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ==========================================================
 with tab1:
     st.header(f"Análisis Departamental: {depto_seleccionado}")
+    
     col1, col2, col3 = st.columns(3)
     
     consumo_real = df_depto_filtrado["demanda_departamental_real_gwh"].sum()
@@ -89,51 +103,57 @@ with tab1:
     st.write("---")
     st.subheader("Predicción vs Realidad")
     
-    df_melted = df_depto_filtrado.melt(
-        id_vars="fecha",
-        value_vars=["demanda_departamental_real_gwh", "demanda_departamental_predicha_gwh"],
-        var_name="Tipo", value_name="Consumo"
-    )
-    df_melted["Tipo"] = df_melted["Tipo"].replace({
-        "demanda_departamental_real_gwh": "Real",
-        "demanda_departamental_predicha_gwh": "Predicho"
-    })
+    if len(df_depto_filtrado) > 0:
+        df_melted = df_depto_filtrado.melt(
+            id_vars="fecha",
+            value_vars=["demanda_departamental_real_gwh", "demanda_departamental_predicha_gwh"],
+            var_name="Tipo", value_name="Consumo"
+        )
+        df_melted["Tipo"] = df_melted["Tipo"].replace({
+            "demanda_departamental_real_gwh": "Real",
+            "demanda_departamental_predicha_gwh": "Predicho"
+        })
 
-    fig_lineas = px.line(df_melted, x="fecha", y="Consumo", color="Tipo", markers=True, title="Curvas de demanda")
-    st.plotly_chart(fig_lineas, use_container_width=True)
+        fig_lineas = px.line(df_melted, x="fecha", y="Consumo", color="Tipo", markers=True, title="Curvas de demanda")
+        st.plotly_chart(fig_lineas, use_container_width=True)
 
-    st.subheader("Relación entre lluvia y consumo")
-    fig_lluvia = px.scatter(df_depto_filtrado, x="lluvia_promedio_depto_mm", y="demanda_departamental_real_gwh", hover_data=["fecha"], trendline="ols")
-    st.plotly_chart(fig_lluvia, use_container_width=True)
+        st.subheader("Relación entre lluvia y consumo")
+        fig_lluvia = px.scatter(df_depto_filtrado, x="lluvia_promedio_depto_mm", y="demanda_departamental_real_gwh", hover_data=["fecha"], trendline="ols")
+        st.plotly_chart(fig_lluvia, use_container_width=True)
+    else:
+        st.warning("No se encontraron registros de curvas para la selección actual.")
 
 # ==========================================================
-# TAB 2: VISTA MUNICIPAL (SÓLO MUNICIPIOS REALES EN TOP 10)
+# TAB 2: VISTA MUNICIPAL
 # ==========================================================
 with tab2:
     st.header(f"Municipios del departamento {depto_seleccionado}")
     
-    st.subheader("Municipios con mayor consumo (Top 10)")
-    top_munis = df_muni_filtrado.groupby("municipio")["demanda_municipio_est_gwh"].sum().reset_index().sort_values(by="demanda_municipio_est_gwh", ascending=False).head(10)
-    
-    fig_bar = px.bar(
-        top_munis, x="demanda_municipio_est_gwh", y="municipio", orientation="h",
-        title="Top 10 Municipios con Mayor Demanda Energética Real en Festivos",
-        labels={'demanda_municipio_est_gwh': 'Consumo Acumulado (GWh)', 'municipio': 'Municipio'}
-    )
-    fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
-    st.plotly_chart(fig_bar, use_container_width=True)
+    if len(df_muni_filtrado) > 0:
+        st.subheader("Municipios con mayor consumo (Top 10)")
+        top_munis = df_muni_filtrado.groupby("municipio")["demanda_municipio_est_gwh"].sum().reset_index().sort_values(by="demanda_municipio_est_gwh", ascending=False).head(10)
+        
+        fig_bar = px.bar(
+            top_munis, x="demanda_municipio_est_gwh", y="municipio", orientation="h",
+            title="Top 10 Municipios con Mayor Demanda Energética Real en Festivos",
+            labels={'demanda_municipio_est_gwh': 'Consumo Acumulado (GWh)', 'municipio': 'Municipio'}
+        )
+        fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
+        st.plotly_chart(fig_bar, use_container_width=True)
 
-    st.subheader("Municipios con mayor error promedio")
-    col_error = "error_absolute" if "error_absolute" in df_muni_filtrado.columns else "error_absoluto"
-    top_error = df_muni_filtrado.groupby("municipio")[col_error].mean().reset_index().sort_values(by=col_error, ascending=False).head(10)
-    
-    fig_error = px.bar(
-        top_error, x=col_error, y="municipio", orientation="h",
-        title="Top 10 Municipios con Mayor Desviación del Modelo",
-        labels={col_error: 'Error Absoluto Promedio (GWh)', 'municipio': 'Municipio'}
-    )
-    fig_error.update_layout(yaxis={'categoryorder':'total ascending'})
-    st.plotly_chart(fig_error, use_container_width=True)
+        st.subheader("Municipios con mayor error promedio")
+        col_error = "error_absolute" if "error_absolute" in df_muni_filtrado.columns else "error_absoluto"
+        top_error = df_muni_filtrado.groupby("municipio")[col_error].mean().reset_index().sort_values(by=col_error, ascending=False).head(10)
+        
+        fig_error = px.bar(
+            top_error, x=col_error, y="municipio", orientation="h",
+            title="Top 10 Municipios con Mayor Desviación del Modelo",
+            labels={col_error: 'Error Absoluto Promedio (GWh)', 'municipio': 'Municipio'}
+        )
+        fig_error.update_layout(yaxis={'categoryorder':'total ascending'})
+        st.plotly_chart(fig_error, use_container_width=True)
+    else:
+        st.info("No hay desglose de sub-municipios disponible para esta entidad territorial.")
 
 # ==========================================================
 # TAB 3: MODELO PREDICTIVO
