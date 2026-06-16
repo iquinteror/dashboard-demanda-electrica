@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CARGA DE DATOS (CON LIMPIEZA Y HOMOLOGACIÓN DE BOGOTÁ)
+# CARGA DE DATOS (CON BLINDAJE PARA BOGOTÁ EN TODOS LOS DF)
 # ==========================================================
 @st.cache_data
 def cargar_datos():
@@ -20,28 +20,34 @@ def cargar_datos():
     df_importancia = pd.read_csv("importancia_caracteristicas.csv")
     df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv")
 
-    # Asegurar que las columnas clave no tengan espacios en blanco alrededor
-    if "nivel" in df_muni_raw.columns:
-        df_muni_raw["nivel"] = df_muni_raw["nivel"].str.strip()
-    df_muni_raw["departamento"] = df_muni_raw["departamento"].str.strip()
-    df_muni_raw["municipio"] = df_muni_raw["municipio"].str.strip()
+    # --- LIMPIEZA EN DATOS DEPARTAMENTALES ---
+    df_depto["departamento"] = df_depto["departamento"].astype(str).str.strip()
+    # Si Bogotá viene escrito con variaciones en el archivo de deptos, lo unificamos de raíz
+    df_depto["departamento"] = df_depto["departamento"].replace({
+        "Bogotá (municipio)": "Bogotá",
+        "Bogotá D.C.": "Bogotá",
+        "Bogota": "Bogotá"
+    })
 
-    # 🛑 FILTRO INTELIGENTE: Excluir filas agregadas de departamentos, pero rescatar Bogotá municipio
+    # --- LIMPIEZA EN DATOS MUNICIPALES ---
     if "nivel" in df_muni_raw.columns:
-        # Mantenemos las filas que sean estrictamente 'municipio'
+        df_muni_raw["nivel"] = df_muni_raw["nivel"].astype(str).str.strip()
+    df_muni_raw["departamento"] = df_muni_raw["departamento"].astype(str).str.strip()
+    df_muni_raw["municipio"] = df_muni_raw["municipio"].astype(str).str.strip()
+
+    # Filtrar para conservar solo nivel municipal, rescatando la fila de Bogotá Municipio
+    if "nivel" in df_muni_raw.columns:
         df_muni = df_muni_raw[df_muni_raw["nivel"] == "municipio"].copy()
     else:
-        # Filtro de seguridad alternativo por si no detecta la columna nivel
         df_muni = df_muni_raw[df_muni_raw["municipio"] != df_muni_raw["departamento"]].copy()
-        # Rescate explícito para Bogotá si se usó el filtro alternativo
-        filas_bogota = df_muni_raw[df_muni_raw["departamento"] == "Bogotá"].copy()
+        filas_bogota = df_muni_raw[df_muni_raw["departamento"].str.contains("Bogotá|Bogota", na=False)].copy()
         df_muni = pd.concat([df_muni, filas_bogota]).drop_duplicates()
 
-    # 🎯 HOMOLOGACIÓN CRÍTICA: Convertir "Bogotá (municipio)" en "Bogotá" para que los filtros unifiquen los datos
-    df_muni["municipio"] = df_muni["municipio"].replace({"Bogotá (municipio)": "Bogotá"})
-    df_muni["departamento"] = df_muni["departamento"].replace({"Bogotá (municipio)": "Bogotá"})
+    # Homologar el nombre de Bogotá en el archivo municipal
+    df_muni["municipio"] = df_muni["municipio"].replace({"Bogotá (municipio)": "Bogotá", "Bogota": "Bogotá"})
+    df_muni["departamento"] = df_muni["departamento"].replace({"Bogotá (municipio)": "Bogotá", "Bogota": "Bogotá"})
 
-    # Convertir fechas
+    # Convertir fechas de forma segura
     df_depto["fecha"] = pd.to_datetime(df_depto["fecha"])
     df_muni["fecha"] = pd.to_datetime(df_muni["fecha"])
     df_sector_hist["fecha"] = pd.to_datetime(df_sector_hist["fecha"])
@@ -51,7 +57,7 @@ def cargar_datos():
 try:
     df_depto, df_muni, df_importancia, df_sector_hist = cargar_datos()
 except:
-    st.error("No se encontraron los archivos CSV requeridos en el repositorio o tienen un formato incompatible.")
+    st.error("No se encontraron los archivos CSV requeridos en el repositorio.")
     st.stop()
 
 # ==========================================================
@@ -74,7 +80,7 @@ df_depto_filtrado = df_depto[df_depto["departamento"] == depto_seleccionado]
 df_muni_filtrado = df_muni[df_muni["departamento"] == depto_seleccionado]
 
 # ==========================================================
-# PESTAÑAS (ORDEN LÓGICO)
+# PESTAÑAS
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏢 Vista Departamental",
@@ -188,31 +194,21 @@ with tab3:
     st.plotly_chart(fig_real_pred, use_container_width=True)
 
 # ==========================================================
-# TAB 4: 🔥 SECTORES ECONÓMICOS
+# TAB 4: SECTORES ECONÓMICOS
 # ==========================================================
 with tab4:
     st.header("🔥 Estructura del Consumo Eléctrico Nacional (2022-2026)")
-    st.markdown("""
-    Esta pestaña presenta la radiografía completa del consumo eléctrico sectorial acumulado desde 2022 hasta el 2026. 
-    Permite identificar qué industrias sostienen la demanda energética base del país en los departamentos de manera estructural.
-    """)
     
     columnas_industrias = [col for col in df_sector_hist.columns if col not in ['fecha', 'departamento']]
     
     st.subheader("1. Mapa de Calor Histórico: Departamentos × Sectores Económicos")
-    
     df_heat_hist = df_sector_hist.groupby('departamento')[columnas_industrias].sum().reset_index()
     df_heat_melted_hist = df_heat_hist.melt(id_vars='departamento', var_name='Sector Industrial', value_name='Consumo_Acumulado_GWh')
     
     fig_heatmap_hist = px.density_heatmap(
         df_heat_melted_hist, x="Sector Industrial", y="departamento", z="Consumo_Acumulado_GWh",
         histfunc="sum", color_continuous_scale="Viridis",
-        title="Matriz de Demanda Energética Acumulada por Actividad Comercial y de Manufactura",
-        labels={
-            'Consumo_Acumulado_GWh': 'Consumo Total (GWh)',
-            'Sector Industrial': 'Sector Económico',
-            'departamento': 'Departamento'
-        }
+        title="Matriz de Demanda Energética Acumulada por Actividad Comercial y de Manufactura"
     )
     st.plotly_chart(fig_heatmap_hist, use_container_width=True)
     
@@ -222,27 +218,19 @@ with tab4:
     with col_izq:
         st.subheader("2. Distribución Nacional por Industria")
         sector_seleccionado = st.selectbox("Seleccione un Sector Industrial para auditar el histórico:", columnas_industrias)
-        
         df_ranking_hist = df_heat_hist[['departamento', sector_seleccionado]].sort_values(by=sector_seleccionado, ascending=False).head(10)
         
-        fig_ranking_hist_bar = px.bar(
-            df_ranking_hist, x=sector_seleccionado, y='departamento', orientation='h',
-            title=f"Top 10 Departamentos Líderes en Consumo de: {sector_seleccionado}",
-            labels={sector_seleccionado: 'Consumo Acumulado (GWh)', 'departamento': 'Departamento'}
-        )
+        fig_ranking_hist_bar = px.bar(df_ranking_hist, x=sector_seleccionado, y='departamento', orientation='h')
         fig_ranking_hist_bar.update_layout(yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_ranking_hist_bar, use_container_width=True)
         
     with col_der:
         st.subheader("3. Sector Predominante en la Matriz Energética Regional")
-        st.markdown("Actividad económica principal que más energía consume históricamente por región:")
-        
         df_heat_hist['Sector Predominante'] = df_heat_hist[columnas_industrias].idxmax(axis=1)
         df_heat_hist['Consumo Total Sector (GWh)'] = df_heat_hist[columnas_industrias].max(axis=1)
         
         tabla_dominante_hist = df_heat_hist[['departamento', 'Sector Predominante', 'Consumo Total Sector (GWh)']].sort_values(by='Consumo Total Sector (GWh)', ascending=False)
         tabla_dominante_hist.columns = ['Departamento', 'Sector Predominante (2022-2026)', 'Consumo Histórico (GWh)']
-        
         st.dataframe(tabla_dominante_hist, use_container_width=True, hide_index=True)
 
 # ==========================================================
@@ -253,11 +241,7 @@ with tab5:
     st.markdown("""
     ### Principales resultados
     - Se entrenó un modelo Random Forest con información diaria comprendida entre 2022 y 2025.
-    - El modelo fue evaluado utilizando exclusivamente los días festivos del primer semestre de 2026.
-    - Se obtuvo un coeficiente de determinación R² = 0.9302.
-    - El algoritmo logró explicar aproximadamente el 93 % de la variabilidad de la demanda eléctrica.
-    - Las variables más importantes fueron el municipio y el departamento.
-    - La precipitación presentó una influencia reducida sobre el consumo eléctrico.
-    - Los patrones sectoriales históricos (2022-2026) demuestran que la infraestructura pesada regional mantiene un consumo rígido que guía la predictibilidad del modelo.
+    - El algoritmo logró explicar aproximadamente el 93 % de la variabilidad de la demanda eléctrica (R² = 0.9302).
+    - Las variables con mayor peso predictivo fueron el municipio y el departamento.
     """)
     st.success("Proyecto de Analítica de Datos Completado con Éxito.")
