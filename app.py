@@ -11,77 +11,82 @@ st.set_page_config(
 )
 
 # ==========================================================
-# CARGA DE DATOS (CON BLINDAJE PARA BOGOTÁ EN TODOS LOS DF)
+# CARGA Y PREPROCESAMIENTO DE DATOS
 # ==========================================================
 @st.cache_data
 def cargar_datos():
+    # Leer archivos directamente
     df_depto = pd.read_csv("predicciones_departamentos_2026.csv")
     df_muni_raw = pd.read_csv("predicciones_festivos_2026.csv")
     df_importancia = pd.read_csv("importancia_caracteristicas.csv")
     df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv")
 
-    # --- LIMPIEZA EN DATOS DEPARTAMENTALES ---
+    # Limpiar espacios invisibles
     df_depto["departamento"] = df_depto["departamento"].astype(str).str.strip()
-    # Si Bogotá viene escrito con variaciones en el archivo de deptos, lo unificamos de raíz
-    df_depto["departamento"] = df_depto["departamento"].replace({
-        "Bogotá (municipio)": "Bogotá",
-        "Bogotá D.C.": "Bogotá",
-        "Bogota": "Bogotá"
-    })
-
-    # --- LIMPIEZA EN DATOS MUNICIPALES ---
-    if "nivel" in df_muni_raw.columns:
-        df_muni_raw["nivel"] = df_muni_raw["nivel"].astype(str).str.strip()
     df_muni_raw["departamento"] = df_muni_raw["departamento"].astype(str).str.strip()
     df_muni_raw["municipio"] = df_muni_raw["municipio"].astype(str).str.strip()
 
-    # Filtrar para conservar solo nivel municipal, rescatando la fila de Bogotá Municipio
-    if "nivel" in df_muni_raw.columns:
-        df_muni = df_muni_raw[df_muni_raw["nivel"] == "municipio"].copy()
-    else:
-        df_muni = df_muni_raw[df_muni_raw["municipio"] != df_muni_raw["departamento"]].copy()
-        filas_bogota = df_muni_raw[df_muni_raw["departamento"].str.contains("Bogotá|Bogota", na=False)].copy()
-        df_muni = pd.concat([df_muni, filas_bogota]).drop_duplicates()
-
-    # Homologar el nombre de Bogotá en el archivo municipal
-    df_muni["municipio"] = df_muni["municipio"].replace({"Bogotá (municipio)": "Bogotá", "Bogota": "Bogotá"})
-    df_muni["departamento"] = df_muni["departamento"].replace({"Bogotá (municipio)": "Bogotá", "Bogota": "Bogotá"})
-
-    # Convertir fechas de forma segura
+    # Estandarizar formatos de fecha
     df_depto["fecha"] = pd.to_datetime(df_depto["fecha"])
-    df_muni["fecha"] = pd.to_datetime(df_muni["fecha"])
+    df_muni_raw["fecha"] = pd.to_datetime(df_muni_raw["fecha"])
     df_sector_hist["fecha"] = pd.to_datetime(df_sector_hist["fecha"])
 
-    return df_depto, df_muni, df_importancia, df_sector_hist
+    # Separar municipios reales excluyendo filas duplicadas de agregación de control
+    # Nota: Dejamos "Bogotá (municipio)" intacto aquí para procesarlo después
+    df_muni = df_muni_raw[df_muni_raw["municipio"] != df_muni_raw["departamento"]].copy()
+    
+    # Agregar explícitamente a Bogotá (municipio) que se excluyó en la regla anterior
+    bogota_muni_row = df_muni_raw[(df_muni_raw["departamento"] == "Bogotá") & (df_muni_raw["municipio"] == "Bogotá (municipio)")].copy()
+    df_muni = pd.concat([df_muni, bogota_muni_row]).drop_duplicates()
+
+    return df_depto, df_muni, df_muni_raw, df_importancia, df_sector_hist
 
 try:
-    df_depto, df_muni, df_importancia, df_sector_hist = cargar_datos()
-except:
-    st.error("No se encontraron los archivos CSV requeridos en el repositorio.")
+    df_depto, df_muni, df_muni_raw, df_importancia, df_sector_hist = cargar_datos()
+except Exception as e:
+    st.error(f"Error al cargar los archivos CSV: {e}")
     st.stop()
 
 # ==========================================================
-# TÍTULO PRINCIPAL
-# ==========================================================
-st.title("⚡ Análisis del Consumo Eléctrico en Días Festivos")
-st.markdown("Predicción de demanda para el primer semestre de 2026 y caracterización del comportamiento industrial histórico (2022-2026).")
-st.write("---")
-
-# ==========================================================
-# FILTRO GLOBAL (Para barras laterales)
+# FILTRO GLOBAL (Barra Lateral)
 # ==========================================================
 st.sidebar.header("Filtros")
-depto_seleccionado = st.sidebar.selectbox(
-    "Seleccione un departamento",
-    sorted(df_depto["departamento"].unique())
-)
-
-df_depto_filtrado = df_depto[df_depto["departamento"] == depto_seleccionado]
-df_muni_filtrado = df_muni[df_muni["departamento"] == depto_seleccionado]
+listado_deptos = sorted(df_depto["departamento"].unique())
+depto_seleccionado = st.sidebar.selectbox("Seleccione un departamento", listado_deptos)
 
 # ==========================================================
-# PESTAÑAS
+# PROCESAMIENTO DINÁMICO E INYECCIÓN DE DATOS PARA BOGOTÁ
 # ==========================================================
+# Si es Bogotá, extraemos sus curvas reales desde el desglose municipal para parchar el vacío de deptos
+if depto_seleccionado == "Bogotá":
+    # Filtrar la fila municipal real de Bogotá
+    df_bogota_real = df_muni_raw[(df_muni_raw["departamento"] == "Bogotá") & (df_muni_raw["municipio"] == "Bogotá (municipio)")].copy()
+    
+    # Construir un dataframe equivalente estructuralmente al departamental
+    df_depto_filtrado = pd.DataFrame({
+        "fecha": df_bogota_real["fecha"],
+        "departamento": "Bogotá",
+        "demanda_departamental_real_gwh": df_bogota_real["demanda_municipio_est_gwh"],
+        "demanda_departamental_predicha_gwh": df_bogota_real["demanda_predicha_gwh"],
+        # Recuperamos la lluvia que sí venía en el archivo de departamentos
+        "lluvia_promedio_depto_mm": df_depto[df_depto["departamento"] == "Bogotá"]["lluvia_promedio_depto_mm"].values
+    })
+    
+    # Para la pestaña municipal, homologamos el nombre para el gráfico de barras
+    df_muni_filtrado = df_bogota_real.copy()
+    df_muni_filtrado["municipio"] = "Bogotá D.C."
+else:
+    # Comportamiento estándar para el resto de departamentos colombianos
+    df_depto_filtrado = df_depto[df_depto["departamento"] == depto_seleccionado]
+    df_muni_filtrado = df_muni[df_muni["departamento"] == depto_seleccionado]
+
+# ==========================================================
+# INTERFAZ GRÁFICA: TÍTULOS Y PESTAÑAS
+# ==========================================================
+st.title("⚡ Análisis del Consumo Eléctrico en Días Festivos")
+st.markdown("Predicción de demanda para el primer semestre de 2026 y caracterización estructural del consumo industrial histórico.")
+st.write("---")
+
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏢 Vista Departamental",
     "🏙 Vista Municipal",
@@ -91,7 +96,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ==========================================================
-# TAB 1: VISTA DEPARTAMENTAL
+# TAB 1: VISTA DEPARTAMENTAL (RECONSTRUIDA)
 # ==========================================================
 with tab1:
     st.header(f"Análisis Departamental: {depto_seleccionado}")
@@ -102,14 +107,14 @@ with tab1:
     consumo_predicho = df_depto_filtrado["demanda_departamental_predicha_gwh"].sum()
     lluvia_promedio = df_depto_filtrado["lluvia_promedio_depto_mm"].mean()
 
-    col1.metric("Consumo Real", f"{consumo_real:.2f} GWh")
-    col2.metric("Consumo Predicho", f"{consumo_predicho:.2f} GWh")
+    col1.metric("Consumo Real Total", f"{consumo_real:.2f} GWh")
+    col2.metric("Consumo Predicho Total", f"{consumo_predicho:.2f} GWh")
     col3.metric("Precipitación Promedio", f"{lluvia_promedio:.2f} mm")
 
     st.write("---")
-    st.subheader("Predicción vs Realidad")
+    st.subheader("Predicción vs Realidad (Curvas de Demanda)")
     
-    if len(df_depto_filtrado) > 0:
+    if len(df_depto_filtrado) > 0 and consumo_real > 0:
         df_melted = df_depto_filtrado.melt(
             id_vars="fecha",
             value_vars=["demanda_departamental_real_gwh", "demanda_departamental_predicha_gwh"],
@@ -120,20 +125,22 @@ with tab1:
             "demanda_departamental_predicha_gwh": "Predicho"
         })
 
-        fig_lineas = px.line(df_melted, x="fecha", y="Consumo", color="Tipo", markers=True, title="Curvas de demanda")
+        fig_lineas = px.line(df_melted, x="fecha", y="Consumo", color="Tipo", markers=True,
+                             title="Evolución del Consumo Energético en Días Festivos (2026)")
         st.plotly_chart(fig_lineas, use_container_width=True)
 
-        st.subheader("Relación entre lluvia y consumo")
-        fig_lluvia = px.scatter(df_depto_filtrado, x="lluvia_promedio_depto_mm", y="demanda_departamental_real_gwh", hover_data=["fecha"], trendline="ols")
+        st.subheader("Relación entre lluvia y consumo de energía")
+        fig_lluvia = px.scatter(df_depto_filtrado, x="lluvia_promedio_depto_mm", y="demanda_departamental_real_gwh", 
+                                hover_data=["fecha"], trendline="ols", title="Dispersión: Precipitación vs Demanda Real")
         st.plotly_chart(fig_lluvia, use_container_width=True)
     else:
-        st.warning("No se encontraron registros de curvas para la selección actual.")
+        st.warning("No se registran variaciones de consumo superiores a cero para esta combinación de filtros.")
 
 # ==========================================================
 # TAB 2: VISTA MUNICIPAL
 # ==========================================================
 with tab2:
-    st.header(f"Municipios del departamento {depto_seleccionado}")
+    st.header(f"Desglose Territorial: {depto_seleccionado}")
     
     if len(df_muni_filtrado) > 0:
         st.subheader("Municipios con mayor consumo (Top 10)")
@@ -141,8 +148,8 @@ with tab2:
         
         fig_bar = px.bar(
             top_munis, x="demanda_municipio_est_gwh", y="municipio", orientation="h",
-            title="Top 10 Municipios con Mayor Demanda Energética Real en Festivos",
-            labels={'demanda_municipio_est_gwh': 'Consumo Acumulado (GWh)', 'municipio': 'Municipio'}
+            title="Top Municipios con Mayor Demanda Energética Real en Festivos",
+            labels={'demanda_municipio_est_gwh': 'Consumo Acumulado (GWh)', 'municipio': 'Entidad Territorial'}
         )
         fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_bar, use_container_width=True)
@@ -153,62 +160,56 @@ with tab2:
         
         fig_error = px.bar(
             top_error, x=col_error, y="municipio", orientation="h",
-            title="Top 10 Municipios con Mayor Desviación del Modelo",
-            labels={col_error: 'Error Absoluto Promedio (GWh)', 'municipio': 'Municipio'}
+            title="Desviación Absoluta Promedio del Modelo por Región",
+            labels={col_error: 'Error Absoluto Promedio (GWh)', 'municipio': 'Entidad Territorial'}
         )
         fig_error.update_layout(yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_error, use_container_width=True)
     else:
-        st.info("No hay desglose de sub-municipios disponible para esta entidad territorial.")
+        st.info("No hay información de sub-municipios disponible para esta selección.")
 
 # ==========================================================
 # TAB 3: MODELO PREDICTIVO
 # ==========================================================
 with tab3:
-    st.header("Modelo Random Forest")
+    st.header("Métricas del Modelo Predictivo (Random Forest)")
     col1, col2 = st.columns(2)
 
     with col1:
-        st.metric("R²", "0.9302")
-        st.metric("MAPE", "16.82%")
-        st.metric("MAE", "0.0267 GWh")
-        st.metric("RMSE", "0.1795 GWh")
+        st.metric("Coeficiente de Determinación (R²)", "0.9302")
+        st.metric("Error Porcentual Absoluto Medio (MAPE)", "16.82%")
+        st.metric("Error Absoluto Medio (MAE)", "0.0267 GWh")
+        st.metric("Error Cuadrático Medio (RMSE)", "0.1795 GWh")
 
     with col2:
         st.markdown("""
-        ### Metodología
-        - Entrenamiento: 2022-2025.
-        - Datos diarios completos.
-        - Test: Festivos enero-mayo 2026.
-        - Algoritmo: Random Forest Regressor.
+        ### Detalles Técnicos del Algoritmo
+        - **Conjunto de Entrenamiento:** Registros diarios continuos (2022-2025).
+        - **Conjunto de Validación:** Festivos nacionales del primer semestre de 2026.
+        - **Target Predictivo:** Demanda Eléctrica por Nodo de Distribución.
         """)
 
     st.write("---")
-    st.subheader("Importancia de características")
-    fig_imp = px.bar(df_importancia, x="Importancia", y="Caracteristica", orientation="h")
+    st.subheader("Importancia Relativa de las Características (Feature Importance)")
+    fig_imp = px.bar(df_importancia, x="Importancia", y="Caracteristica", orientation="h", title="Peso de las Variables en las Decisiones del Árbol")
     fig_imp.update_layout(yaxis={'categoryorder':'total ascending'})
     st.plotly_chart(fig_imp, use_container_width=True)
-
-    st.subheader("Real vs Predicho")
-    fig_real_pred = px.scatter(df_muni, x="demanda_municipio_est_gwh", y="demanda_predicha_gwh", opacity=0.6)
-    st.plotly_chart(fig_real_pred, use_container_width=True)
 
 # ==========================================================
 # TAB 4: SECTORES ECONÓMICOS
 # ==========================================================
 with tab4:
-    st.header("🔥 Estructura del Consumo Eléctrico Nacional (2022-2026)")
+    st.header("🔥 Matriz y Estructura del Consumo Sectorial Histórico (2022-2026)")
     
     columnas_industrias = [col for col in df_sector_hist.columns if col not in ['fecha', 'departamento']]
     
-    st.subheader("1. Mapa de Calor Histórico: Departamentos × Sectores Económicos")
+    st.subheader("1. Mapa de Calor Global: Intensidad Energética por Sector")
     df_heat_hist = df_sector_hist.groupby('departamento')[columnas_industrias].sum().reset_index()
     df_heat_melted_hist = df_heat_hist.melt(id_vars='departamento', var_name='Sector Industrial', value_name='Consumo_Acumulado_GWh')
     
     fig_heatmap_hist = px.density_heatmap(
         df_heat_melted_hist, x="Sector Industrial", y="departamento", z="Consumo_Acumulado_GWh",
-        histfunc="sum", color_continuous_scale="Viridis",
-        title="Matriz de Demanda Energética Acumulada por Actividad Comercial y de Manufactura"
+        color_continuous_scale="Viridis", title="Demanda Eléctrica Acumulada por Actividad Industrial Comercial"
     )
     st.plotly_chart(fig_heatmap_hist, use_container_width=True)
     
@@ -216,32 +217,30 @@ with tab4:
     col_izq, col_der = st.columns(2)
     
     with col_izq:
-        st.subheader("2. Distribución Nacional por Industria")
-        sector_seleccionado = st.selectbox("Seleccione un Sector Industrial para auditar el histórico:", columnas_industrias)
+        st.subheader("2. Distribución Regional por Actividad")
+        sector_seleccionado = st.selectbox("Seleccione un Sector Industrial para analizar:", columnas_industrias)
         df_ranking_hist = df_heat_hist[['departamento', sector_seleccionado]].sort_values(by=sector_seleccionado, ascending=False).head(10)
         
-        fig_ranking_hist_bar = px.bar(df_ranking_hist, x=sector_seleccionado, y='departamento', orientation='h')
+        fig_ranking_hist_bar = px.bar(df_ranking_hist, x=sector_seleccionado, y='departamento', orientation='h', title=f"Top 10 Regiones Líderes en {sector_seleccionado}")
         fig_ranking_hist_bar.update_layout(yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_ranking_hist_bar, use_container_width=True)
         
     with col_der:
-        st.subheader("3. Sector Predominante en la Matriz Energética Regional")
+        st.subheader("3. Dominancia Eléctrica en la Matriz Regional")
         df_heat_hist['Sector Predominante'] = df_heat_hist[columnas_industrias].idxmax(axis=1)
-        df_heat_hist['Consumo Total Sector (GWh)'] = df_heat_hist[columnas_industrias].max(axis=1)
+        df_heat_hist['Consumo Máximo (GWh)'] = df_heat_hist[columnas_industrias].max(axis=1)
         
-        tabla_dominante_hist = df_heat_hist[['departamento', 'Sector Predominante', 'Consumo Total Sector (GWh)']].sort_values(by='Consumo Total Sector (GWh)', ascending=False)
-        tabla_dominante_hist.columns = ['Departamento', 'Sector Predominante (2022-2026)', 'Consumo Histórico (GWh)']
+        tabla_dominante_hist = df_heat_hist[['departamento', 'Sector Predominante', 'Consumo Máximo (GWh)']].sort_values(by='Consumo Máximo (GWh)', ascending=False)
+        tabla_dominante_hist.columns = ['Departamento', 'Actividad Económica Líder', 'Consumo Histórico (GWh)']
         st.dataframe(tabla_dominante_hist, use_container_width=True, hide_index=True)
 
 # ==========================================================
-# TAB 5: 📌 CONCLUSIONES
+# TAB 5: CONCLUSIONES
 # ==========================================================
 with tab5:
-    st.header("Conclusiones")
+    st.header("Conclusiones Académicas")
     st.markdown("""
-    ### Principales resultados
-    - Se entrenó un modelo Random Forest con información diaria comprendida entre 2022 y 2025.
-    - El algoritmo logró explicar aproximadamente el 93 % de la variabilidad de la demanda eléctrica (R² = 0.9302).
-    - Las variables con mayor peso predictivo fueron el municipio y el departamento.
+    - **Precisión Estructural:** El modelo presenta un ajuste óptimo ($R^2 = 0.9302$), logrando capturar las dinámicas de desaceleración comercial en días festivos nacionales de manera robusta.
+    - **Elasticidad Climática:** La precipitación promedio departamental mostró un impacto marginal frente al peso estructural de las variables geográficas fijas (municipio/departamento), sugiriendo que la demanda en días no laborables responde a inercias comerciales rígidas y no a fluctuaciones meteorológicas de corto plazo.
     """)
-    st.success("Proyecto de Analítica de Datos Completado con Éxito.")
+    st.success("Análisis Finalizado Exitosamente.")
