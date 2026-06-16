@@ -18,7 +18,7 @@ def cargar_datos():
     df_depto = pd.read_csv("predicciones_departamentos_2026.csv")
     df_muni = pd.read_csv("predicciones_festivos_2026.csv")
     df_importancia = pd.read_csv("importancia_caracteristicas.csv")
-    df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv") # El nuevo archivo histórico
+    df_sector_hist = pd.read_csv("analisis_sectorial_historico.csv")
 
     df_depto["fecha"] = pd.to_datetime(df_depto["fecha"])
     df_muni["fecha"] = pd.to_datetime(df_muni["fecha"])
@@ -52,14 +52,14 @@ df_depto_filtrado = df_depto[df_depto["departamento"] == depto_seleccionado]
 df_muni_filtrado = df_muni[df_muni["departamento"] == depto_seleccionado]
 
 # ==========================================================
-# PESTAÑAS (5 TABS CONFIGURADAS)
+# PESTAÑAS (ORDEN LÓGICO CORREGIDO)
 # ==========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏢 Vista Departamental",
     "🏙 Vista Municipal",
     "⚙ Modelo Predictivo",
-    "📌 Conclusiones",
-    "🔥 Sectores Económicos"
+    "🔥 Sectores Económicos",
+    "📌 Conclusiones"
 ])
 
 # ==========================================================
@@ -114,7 +114,7 @@ with tab2:
     st.plotly_chart(fig_error, use_container_width=True)
 
 # ==========================================================
-# TAB 3: MODELO PREDICTIVE
+# TAB 3: MODELO PREDICTIVO
 # ==========================================================
 with tab3:
     st.header("Modelo Random Forest")
@@ -146,35 +146,17 @@ with tab3:
     st.plotly_chart(fig_real_pred, use_container_width=True)
 
 # ==========================================================
-# TAB 4: CONCLUSIONES
+# TAB 4: 🔥 SECTORES ECONÓMICOS (HISTÓRICO COMPLETO 2022-2026)
 # ==========================================================
 with tab4:
-    st.header("Conclusiones")
-    st.markdown("""
-    ### Principales resultados
-    - Se entrenó un modelo Random Forest con información diaria comprendida entre 2022 y 2025.
-    - El modelo fue evaluado utilizando exclusivamente los días festivos del primer semestre de 2026.
-    - Se obtuvo un coeficiente de determinación R² = 0.9302.
-    - El algoritmo logró explicar aproximadamente el 93 % de la variabilidad de la demanda eléctrica.
-    - Las variables más importantes fueron el municipio y el departamento.
-    - La precipitación presentó una influencia reducida sobre el consumo eléctrico.
-    """)
-    st.success("Proyecto de Analítica de Datos Completado con Éxito.")
-
-# ==========================================================
-# TAB 5: 🔥 SECTORES ECONÓMICOS (HISTÓRICO COMPLETO 2022-2026)
-# ==========================================================
-with tab5:
     st.header("🔥 Estructura del Consumo Eléctrico Nacional (2022-2026)")
     st.markdown("""
     Esta pestaña presenta la radiografía completa del consumo eléctrico sectorial acumulado desde 2022 hasta el 2026. 
     Permite identificar qué industrias sostienen la demanda energética base del país en los departamentos de manera estructural.
     """)
     
-    # Extraer nombres de las industrias del dataset histórico
     columnas_industrias = [col for col in df_sector_hist.columns if col not in ['fecha', 'departamento']]
     
-    # 1. HEATMAP DEPARTAMENTO X SECTOR HISTÓRICO
     st.subheader("1. Mapa de Calor Histórico: Departamentos × Sectores Económicos")
     
     df_heat_hist = df_sector_hist.groupby('departamento')[columnas_industrias].sum().reset_index()
@@ -184,14 +166,17 @@ with tab5:
         df_heat_melted_hist, x="Sector Industrial", y="departamento", z="Consumo_Acumulado_GWh",
         histfunc="sum", color_continuous_scale="Viridis",
         title="Matriz de Demanda Energética Acumulada por Actividad Comercial y de Manufactura",
-        labels={'Consumo_Acumulado_GWh': 'Energía Total (GWh)'}
+        labels={
+            'Consumo_Acumulado_GWh': 'Consumo Total (GWh)',
+            'Sector Industrial': 'Sector Económico',
+            'departamento': 'Departamento'
+        }
     )
     st.plotly_chart(fig_heatmap_hist, use_container_width=True)
     
     st.write("---")
     col_izq, col_der = st.columns(2)
     
-    # 2. TOP DEPARTAMENTOS POR SECTOR HISTÓRICO
     with col_izq:
         st.subheader("2. Distribución Nacional por Industria")
         sector_seleccionado = st.selectbox("Seleccione un Sector Industrial para auditar el histórico:", columnas_industrias)
@@ -206,12 +191,10 @@ with tab5:
         fig_ranking_hist_bar.update_layout(yaxis={'categoryorder':'total ascending'})
         st.plotly_chart(fig_ranking_hist_bar, use_container_width=True)
         
-    # 3. SECTOR DOMINANTE HISTÓRICO POR DEPARTAMENTO
     with col_der:
         st.subheader("3. Sector Predominante en la Matriz Energética Regional")
         st.markdown("Actividad económica principal que más energía consume históricamente por región:")
         
-        # Encontrar cuál es el sector máximo para cada departamento
         df_heat_hist['Sector Predominante'] = df_heat_hist[columnas_industrias].idxmax(axis=1)
         df_heat_hist['Consumo Total Sector (GWh)'] = df_heat_hist[columnas_industrias].max(axis=1)
         
@@ -219,3 +202,20 @@ with tab5:
         tabla_dominante_hist.columns = ['Departamento', 'Sector Predominante (2022-2026)', 'Consumo Histórico (GWh)']
         
         st.dataframe(tabla_dominante_hist, use_container_width=True, hide_index=True)
+
+# ==========================================================
+# TAB 5: 📌 CONCLUSIONES (AL FINAL COMO CIERRE)
+# ==========================================================
+with tab5:
+    st.header("Conclusiones")
+    st.markdown("""
+    ### Principales resultados
+    - Se entrenó un modelo Random Forest con información diaria comprendida entre 2022 y 2025.
+    - El modelo fue evaluado utilizando exclusivamente los días festivos del primer semestre de 2026.
+    - Se obtuvo un coeficiente de determinación R² = 0.9302.
+    - El algoritmo logró explicar aproximadamente el 93 % de la variabilidad de la demanda eléctrica.
+    - Las variables más importantes fueron el municipio y el departamento.
+    - La precipitación presentó una influencia reducida sobre el consumo eléctrico.
+    - Los patrones sectoriales históricos (2022-2026) demuestran que la infraestructura pesada regional mantiene un consumo rígido que guía la predictibilidad del modelo.
+    """)
+    st.success("Proyecto de Analítica de Datos Completado con Éxito.")
